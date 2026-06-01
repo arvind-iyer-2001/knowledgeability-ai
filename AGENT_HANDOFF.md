@@ -1,85 +1,79 @@
 # Agent Handoff — knowledgeability-ai
 
-This document tells an incoming LLM agent everything needed to reproduce the full working state of this project from a fresh clone. Follow steps in order.
+Everything an incoming agent or developer needs to pick up this project cold.
 
 ---
 
-## What this project is
+## What this is
 
-A knowledge graph over KX/kdb+ documentation. Files from 8 KX GitHub repos are chunked and fed to [Graphiti](https://github.com/getzep/graphiti), which uses Claude to extract entities and relationships and stores them in Neo4j. A query CLI and two MCP server variants expose hybrid (vector + graph) search to Claude Desktop.
+A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX repos are chunked and fed to [Graphiti](https://github.com/getzep/graphiti), which uses an LLM to extract entities and relationships and stores them in Neo4j with vector embeddings. A query CLI and an MCP server expose hybrid (vector + graph) search to Claude Desktop.
 
----
-
-## Prerequisites
-
-Install these before anything else:
-
-| Tool | Version | Purpose |
-|------|---------|---------|
-| Python | 3.10+ | Runtime |
-| Docker | any | Neo4j container |
-| Ollama | any | Local embeddings |
-| git | any | Clone KX repos |
+**Read these first:**
+- [WHAT_WE_BUILT.md](WHAT_WE_BUILT.md) — full system description, CLI flags, benchmarks, corpus overview
+- [TRADEOFFS.md](TRADEOFFS.md) — every design decision with numbers: model selection, caching, multi-agent options
 
 ---
 
-## Step 1 — Clone this repo
+## Current State
 
+| Item | Status |
+|---|---|
+| Infrastructure | Complete |
+| Ingestion pipeline | Complete — `ingest.py` |
+| Query CLI | Complete — `query.py` |
+| MCP server (Claude Desktop) | Complete — `mcp_server_stdio.py` |
+| Benchmarks run | `haiku` (107 eps), `llama-fast` (107 eps), `llama` (16 eps), `haiku-cached` (107 eps) |
+| Full corpus ingested | Not yet — only `kdb-x-mcp-server` repo done |
+| Prompt caching | Implemented but ineffective for long-form content (see TRADEOFFS.md) |
+
+### Neo4j groups in the graph right now
+| group_id | Episodes | Entities | Edges | Notes |
+|---|---|---|---|---|
+| haiku | 107 | 101 | 179 | kdb-x-mcp-server, baseline |
+| llama-fast | 107 | 161 | 85 | kdb-x-mcp-server, local model |
+| llama | 16 | ~20 | ~15 | kdb-x-mcp-server, partial run |
+| haiku-cached | 107 | ~100 | ~170 | kdb-x-mcp-server, caching test |
+
+---
+
+## Setup (fresh clone)
+
+### Prerequisites
+- Python 3.10+
+- Docker (Neo4j)
+- Ollama (local embeddings)
+
+### 1. Venv + dependencies
 ```bash
-git clone <repo-url> knowledgeability-ai
-cd knowledgeability-ai
+python3 -m venv .venv
+source .venv/bin/activate
+pip install graphiti-core anthropic python-dotenv mcp "graphiti-core[voyageai]" matplotlib
 ```
 
----
+> **Do not use system Python or Homebrew Python** — externally managed environment will block pip.
 
-## Step 2 — Install Python dependencies
-
+### 2. Neo4j
 ```bash
-pip install graphiti-core anthropic python-dotenv uvicorn starlette mcp "graphiti-core[voyageai]"
-```
-
----
-
-## Step 3 — Start Neo4j
-
-```bash
-docker run -d \
-  --name neo4j \
+docker run -d --name neo4j \
   -p 7474:7474 -p 7687:7687 \
   -e NEO4J_AUTH=neo4j/password123 \
   neo4j:5
 ```
+Verify at http://localhost:7474 (neo4j / password123).
 
-Verify at http://localhost:7474 (login: `neo4j` / `password123`).
-
----
-
-## Step 4 — Pull embedding model
-
+### 3. Ollama embeddings
 ```bash
 ollama pull nomic-embed-text
 ```
 
----
-
-## Step 5 — Configure environment
-
+### 4. Environment
 ```bash
 cp .env.example .env
-# Open .env and set ANTHROPIC_API_KEY
+# Set ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Minimum required:
-```
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
----
-
-## Step 6 — Clone KX corpus into dump/
-
-The `dump/` directory is gitignored (large repos). Re-create it:
-
+### 5. KX corpus
+`dump/` is gitignored. Re-clone:
 ```bash
 mkdir -p dump && cd dump
 for repo in docs kx-sdk-reference-architectures pykx kx-skills nvidia-kx-samples kdb-x-mcp-server kdbai-mcp-server kx-vscode; do
@@ -88,108 +82,126 @@ done
 cd ..
 ```
 
-Expected result: 8 subdirectories under `dump/`.
-
 ---
 
-## Step 7 — Run ingestion
+## Running Things
 
+### Ingest a single repo (recommended first run)
 ```bash
-# Full corpus (slow, uses Claude Opus — best quality)
-python3 ingest.py
-
-# Or ingest one repo first to verify the pipeline works
-python3 ingest.py --repo pykx --model haiku
+source .venv/bin/activate
+python3 ingest.py --repo kdb-x-mcp-server --model haiku --group-id haiku
 ```
 
-Monitor progress:
+### Ingest full corpus
+```bash
+python3 ingest.py --model haiku --group-id production
+# ~31 hours, ~$293 at Haiku pricing
+```
+
+### Monitor progress
 ```bash
 ./progress.sh
 ```
 
-Ingestion is idempotent — safe to re-run or resume by repo.
-
----
-
-## Step 8 — Verify with a query
-
+### Query the graph
 ```bash
-python3 query.py "What is kdb+tick?"
+python3 query.py "How does tickerplant log recovery work?"
+python3 query.py --group haiku "What is .u.upd?"
+python3 query.py  # interactive mode
 ```
 
-Expected: numbered list of facts extracted from the knowledge graph.
-
----
-
-## Step 9 — Start the MCP server
-
-**For Claude Desktop on Windows/WSL (stdio transport):**
-
-Add to `%APPDATA%\Claude\claude_desktop_config.json`:
+### MCP server for Claude Desktop
+Config at `~/Library/Application Support/Claude/claude_desktop_config.json` (already set up on this machine):
 ```json
 {
-  "mcpServers": {
-    "kx-knowledge-graph": {
-      "command": "C:\\Windows\\System32\\wsl.exe",
-      "args": ["bash", "-c", "cd /home/aiyer/knowledgeability-ai && python3 mcp_server_stdio.py"]
-    }
+  "kx-knowledge-graph": {
+    "command": "/path/to/.venv/bin/python3",
+    "args": ["/path/to/mcp_server_stdio.py"]
   }
 }
 ```
+Tool name: `search_kx_knowledge`. Supports `query`, `num_results`, `group_ids` parameters.
 
-Restart Claude Desktop. The `search_kx_knowledge` tool should appear.
+---
 
-**For HTTP clients (SSE transport):**
-```bash
-python3 mcp_server.py
-# Listens on http://localhost:8765/sse
+## File Map
+
+```
+ingest.py               ingestion pipeline — file walker → chunker → Graphiti
+query.py                CLI query tool — one-shot and interactive
+mcp_server_stdio.py     MCP server, stdio transport for Claude Desktop
+mcp_server.py           MCP server, SSE transport (HTTP clients)
+progress.sh             polls Neo4j for node/edge counts
+WHAT_WE_BUILT.md        full system documentation
+TRADEOFFS.md            design decisions, cost analysis, architecture options
+cost_scaling.png        cache vs no-cache cost curves (long-form vs short-form content)
+multiagent_scaling.png  time/cost/cache efficiency across agent counts
+multiagent_architecture.png  sequential vs 2-phase parallel architecture diagram
+.env.example            environment variable template
+dump/                   KX repos (gitignored — re-clone per setup step 5)
+logs/                   timestamped ingestion logs (gitignored)
 ```
 
 ---
 
-## File map
+## Key Implementation Details
 
+### Graphiti makes ~5 LLM calls per episode
+`extract_nodes` → `dedupe_nodes` → `extract_edges` → `dedupe_edges` → `summarize_nodes`
+
+Dedup searches are **scoped to `group_id`** — entities in different groups are never merged during ingestion but can be queried together via `group_ids=[...]`.
+
+### Two LLM client classes
+- `OpenAIGenericClient` — use for Ollama (uses `chat/completions` + JSON schema)
+- `CachedAnthropicClient` — use for Anthropic (subclass with cache_control + token tracking)
+
+Never use `OpenAIClient` with Ollama — it targets the Responses API (`/v1/responses`) which Ollama doesn't support.
+
+### Prompt caching: works but doesn't save money for this workload
+- Haiku 4.5 requires 4,096 token minimum cacheable block
+- Graphiti's system prompts are ~15 tokens — caching never fires
+- Injecting a 6k-token KX domain prefix enables caching but adds more cost than it saves (long-form content)
+- **Will save ~88% for future short-form ingestion (Slack, Freshdesk)** — infrastructure already in place
+
+### Local Ollama models: two required fixes
+1. Set `small_model=model` in `LLMConfig` — otherwise Graphiti defaults to `gpt-4.1-nano` (404)
+2. Use `OpenAIGenericClient` not `OpenAIClient`
+
+### Token tracking
+`TokenTracker` logs at end of each run:
 ```
-ingest.py           — ingestion pipeline (file walker → chunker → Graphiti)
-query.py            — CLI query tool (one-shot and interactive)
-mcp_server.py       — MCP server, SSE transport (HTTP clients)
-mcp_server_stdio.py — MCP server, stdio transport (Claude Desktop on Windows/WSL)
-progress.sh         — polls Neo4j for node/edge counts during ingestion
-.env.example        — environment variable template
-dump/               — KX repos (gitignored, re-clone per Step 6)
+Token usage — calls: 486 | input: 2,259,225 | output: 57,614 | cache_write: 0 | cache_read: 0 | cache_hit_rate: 0.0% | estimated_cost: $2.0378
 ```
 
 ---
 
-## Current state (as of handoff)
+## What To Do Next
 
-- Infrastructure scripts and MCP servers: complete and working
-- Corpus cloned: yes (`dump/` populated with 8 repos)
-- Ingestion: run (full corpus or partial — check Neo4j for current node/edge counts via `./progress.sh`)
-- MCP tool name: `search_kx_knowledge`
+### Immediate
+- [ ] Ingest full 8-repo corpus: `python3 ingest.py --model haiku --group-id production`
+- [ ] Prune test files / changelogs from `nvidia-kx-samples` and `docs` before ingesting — could cut ~30% cost
 
----
+### When adding Slack / Freshdesk
+- [ ] Enable `CachedAnthropicClient` caching — will save ~88% at scale for short messages
+- [ ] Use a separate `group_id` per source (e.g. `slack-2026-06`, `freshdesk-2026-06`)
+- [ ] Query across sources: `--group production --group slack-2026-06`
 
-## Key design decisions (why things are the way they are)
-
-| Decision | Reason |
-|----------|--------|
-| Graphiti over plain vector RAG | Preserves typed relationships across KX docs (e.g. tickerplant → RDB → HDB) |
-| Ollama default embedder | Zero API cost; swap to Voyage AI with `--embedder voyage` |
-| `PassthroughReranker` | No local cross-encoder; avoids hard dependency |
-| Two MCP transports | SSE for generic HTTP; stdio because Claude Desktop on Windows can't reach WSL localhost reliably over SSE |
-| Haiku at query time | Fast/cheap for entity extraction; Opus at ingest for extraction quality |
+### If ingestion speed becomes a constraint
+- Use **parallel per-repo ingestion** (one agent per repo, isolated `group_ids`) — cuts 31h → 4h
+- Do **not** try to merge group_ids post-hoc — edge reconciliation is unsolved without forking Graphiti
+- See [TRADEOFFS.md](TRADEOFFS.md) for full multi-agent analysis
 
 ---
 
 ## Troubleshooting
 
-**Neo4j connection refused** — container not running. Run `docker start neo4j` or repeat Step 3.
-
-**`ANTHROPIC_API_KEY not set`** — `.env` missing or not copied. Repeat Step 5.
-
-**`ollama: command not found` / embedding errors** — Ollama not running or model not pulled. Run `ollama serve` and repeat Step 4.
-
-**`No results found`** — ingestion not complete or Neo4j was reset. Re-run Step 7.
-
-**Claude Desktop can't see the tool** — restart Claude Desktop after editing `claude_desktop_config.json`. Check WSL path matches your username.
+| Symptom | Fix |
+|---|---|
+| `Neo4j connection refused` | `docker start neo4j` |
+| `ANTHROPIC_API_KEY not set` | Check `.env` exists and is populated |
+| `model gpt-4.1-nano not found` | Missing `small_model=model` in Ollama LLMConfig |
+| `NodeResolutions - Input should be an object` | Using `OpenAIClient` instead of `OpenAIGenericClient` for Ollama |
+| `argument after ** must be a mapping` | `CachedAnthropicClient._generate_response` returning raw Message — must return `(tool_args_dict, input_tokens, output_tokens)` |
+| `betas: unexpected keyword argument` | Remove `betas=["prompt-caching-2024-07-31"]` — not needed in SDK 0.105.2+ |
+| `No results found` on query | Ingestion incomplete or Neo4j was reset — check `./progress.sh` |
+| Claude Desktop can't see tool | Restart Claude Desktop after editing config |
