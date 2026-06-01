@@ -34,11 +34,63 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 from graphiti_core import Graphiti
+from anthropic import AsyncAnthropic
 from graphiti_core.llm_client.anthropic_client import AnthropicClient
 from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.llm_client.config import LLMConfig
+from graphiti_core.llm_client.client import ModelSize
+from graphiti_core.prompts.models import Message
 from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.cross_encoder.client import CrossEncoderClient
+
+
+class CachedAnthropicClient(AnthropicClient):
+    """AnthropicClient with prompt caching on the system message.
+
+    Adds cache_control to the system prompt block so Anthropic caches it
+    across calls — saves ~80% of input tokens since system prompts are
+    identical for all Graphiti extraction calls.
+    """
+
+    async def _generate_response(
+        self,
+        messages: list[Message],
+        response_model=None,
+        max_tokens: int | None = None,
+        model_size: ModelSize = ModelSize.medium,
+    ):
+        import typing
+        from anthropic.types import MessageParam, ToolChoiceParam, ToolUnionParam
+
+        system_message = messages[0]
+        user_messages = [{'role': m.role, 'content': m.content} for m in messages[1:]]
+        user_messages_cast = typing.cast(list[MessageParam], user_messages)
+        max_creation_tokens = self._resolve_max_tokens(max_tokens, self.model)
+        tools, tool_choice = self._create_tool(response_model)
+
+        result = await self.client.messages.create(
+            system=[{
+                "type": "text",
+                "text": system_message.content,
+                "cache_control": {"type": "ephemeral"},
+            }],
+            max_tokens=max_creation_tokens,
+            temperature=self.temperature,
+            messages=user_messages_cast,
+            model=self.model,
+            tools=tools,
+            tool_choice=tool_choice,
+            betas=["prompt-caching-2024-07-31"],
+        )
+
+        input_tokens = result.usage.input_tokens if result.usage else 0
+        output_tokens = result.usage.output_tokens if result.usage else 0
+        cache_read = getattr(result.usage, 'cache_read_input_tokens', 0) or 0
+        cache_write = getattr(result.usage, 'cache_creation_input_tokens', 0) or 0
+        if cache_read or cache_write:
+            log.debug(f"Cache — read: {cache_read} write: {cache_write}")
+
+        return result, input_tokens, output_tokens
 
 DUMP_DIR = Path(__file__).parent / "dump"
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
@@ -130,7 +182,7 @@ def build_llm(llm_provider: str, model: str) -> AnthropicClient | OpenAIGenericC
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
-    return AnthropicClient(LLMConfig(model=model, api_key=api_key))
+    return CachedAnthropicClient(LLMConfig(model=model, api_key=api_key))
 
 
 async def ingest(repo: str | None, path: Path | None, model: str, embedder_name: str, llm_provider: str, group_id: str | None = None):
