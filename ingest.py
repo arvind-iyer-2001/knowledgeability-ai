@@ -10,15 +10,32 @@ Usage:
 
 import argparse
 import asyncio
+import logging
 import os
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 load_dotenv()
 
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+_log_file = LOG_DIR / f"ingest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    handlers=[
+        logging.FileHandler(_log_file),
+        logging.StreamHandler(sys.stdout),
+    ],
+)
+log = logging.getLogger(__name__)
+
 from graphiti_core import Graphiti
 from graphiti_core.llm_client.anthropic_client import AnthropicClient
+from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
 from graphiti_core.llm_client.config import LLMConfig
 from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.cross_encoder.client import CrossEncoderClient
@@ -29,6 +46,7 @@ NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password123")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "gemma3:27b")
 
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 200
@@ -36,7 +54,7 @@ CHUNK_OVERLAP = 200
 INCLUDE_EXTENSIONS = {".md", ".py", ".q", ".rst", ".txt", ".yaml", ".yml", ".json"}
 EXCLUDE_DIRS = {".git", "__pycache__", "node_modules", ".tox", "dist", "build"}
 
-MODELS = {
+ANTHROPIC_MODELS = {
     "opus":   "claude-opus-4-7",
     "sonnet": "claude-sonnet-4-6",
     "haiku":  "claude-haiku-4-5-20251001",
@@ -101,12 +119,22 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
     return chunks
 
 
-async def ingest(repo: str | None, path: Path | None, model: str, embedder_name: str):
+def build_llm(llm_provider: str, model: str) -> AnthropicClient | OpenAIGenericClient:
+    if llm_provider == "ollama":
+        return OpenAIGenericClient(LLMConfig(
+            model=model,
+            small_model=model,
+            api_key="ollama",
+            base_url=OLLAMA_BASE_URL,
+        ))
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
+    return AnthropicClient(LLMConfig(model=model, api_key=api_key))
 
-    llm = AnthropicClient(LLMConfig(model=model, api_key=api_key))
+
+async def ingest(repo: str | None, path: Path | None, model: str, embedder_name: str, llm_provider: str, group_id: str | None = None):
+    llm = build_llm(llm_provider, model)
     embedder = build_embedder(embedder_name)
     cross_encoder = PassthroughReranker()
 
@@ -119,8 +147,11 @@ async def ingest(repo: str | None, path: Path | None, model: str, embedder_name:
 
     await client.build_indices_and_constraints()
 
+    effective_group_id = group_id or llm_provider
+    log.info(f"Group ID: {effective_group_id}")
+
     files = collect_files(DUMP_DIR, repo, path)
-    print(f"Found {len(files)} files")
+    log.info(f"Found {len(files)} files")
 
     total_episodes = 0
     for file_path in files:
@@ -130,14 +161,14 @@ async def ingest(repo: str | None, path: Path | None, model: str, embedder_name:
         try:
             text = file_path.read_text(encoding="utf-8", errors="ignore").strip()
         except Exception as e:
-            print(f"  SKIP {rel}: {e}")
+            log.warning(f"SKIP {rel}: {e}")
             continue
 
         if not text:
             continue
 
         chunks = chunk_text(text)
-        print(f"[{repo_name}] {file_path.name} — {len(chunks)} chunk(s)")
+        log.info(f"[{repo_name}] {file_path.name} — {len(chunks)} chunk(s)")
 
         for i, chunk in enumerate(chunks):
             episode_name = f"{rel}:chunk{i}"
@@ -148,12 +179,13 @@ async def ingest(repo: str | None, path: Path | None, model: str, embedder_name:
                     episode_body=chunk,
                     source_description=source_desc,
                     reference_time=datetime.now(timezone.utc),
+                    group_id=effective_group_id,
                 )
                 total_episodes += 1
             except Exception as e:
-                print(f"  ERROR {episode_name}: {e}")
+                log.error(f"ERROR {episode_name}: {e}")
 
-    print(f"\nDone. {total_episodes} episodes ingested.")
+    log.info(f"Done. {total_episodes} episodes ingested.")
     await client.close()
 
 
@@ -162,12 +194,24 @@ if __name__ == "__main__":
     parser.add_argument("--repo", help="Repo name under dump/ (e.g. pykx)")
     parser.add_argument("--path", help="Specific file or directory path to ingest")
     parser.add_argument(
-        "--model", choices=MODELS.keys(), default="opus",
-        help="LLM for extraction: opus (best), sonnet (balanced), haiku (fast/cheap). Default: opus",
+        "--model", choices=list(ANTHROPIC_MODELS.keys()), default="opus",
+        help="Anthropic model: opus (best), sonnet (balanced), haiku (fast/cheap). Ignored when --llm ollama.",
+    )
+    parser.add_argument(
+        "--ollama-model", default=OLLAMA_LLM_MODEL,
+        help=f"Ollama model name for --llm ollama (default: {OLLAMA_LLM_MODEL})",
+    )
+    parser.add_argument(
+        "--llm", choices=["anthropic", "ollama"], default="anthropic",
+        help="LLM provider for entity extraction. Default: anthropic",
     )
     parser.add_argument(
         "--embedder", choices=["ollama", "voyage"], default="ollama",
         help="Embedding backend: ollama (local, default) or voyage (API). Default: ollama",
+    )
+    parser.add_argument(
+        "--group-id", default=None,
+        help="Graphiti group ID to namespace this run (default: llm provider name). Use to isolate parallel benchmark runs.",
     )
     args = parser.parse_args()
 
@@ -175,6 +219,11 @@ if __name__ == "__main__":
     if path_arg and not path_arg.exists():
         raise SystemExit(f"Path not found: {path_arg}")
 
-    model_id = MODELS[args.model]
-    print(f"Model: {args.model} ({model_id}) | Embedder: {args.embedder}")
-    asyncio.run(ingest(repo=args.repo, path=path_arg, model=model_id, embedder_name=args.embedder))
+    if args.llm == "ollama":
+        model_id = args.ollama_model
+        log.info(f"LLM: ollama ({model_id}) | Embedder: {args.embedder} | Log: {_log_file}")
+    else:
+        model_id = ANTHROPIC_MODELS[args.model]
+        log.info(f"LLM: anthropic/{args.model} ({model_id}) | Embedder: {args.embedder} | Log: {_log_file}")
+
+    asyncio.run(ingest(repo=args.repo, path=path_arg, model=model_id, embedder_name=args.embedder, llm_provider=args.llm, group_id=args.group_id))
