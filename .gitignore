@@ -1,0 +1,18 @@
+# corpus — too large for git, re-clone with instructions in AGENT_HANDOFF.md
+dump/
+
+# secrets
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# misc
+.DS_Store
+*.log
