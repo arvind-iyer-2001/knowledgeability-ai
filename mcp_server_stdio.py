@@ -73,6 +73,11 @@ async def list_tools() -> list[types.Tool]:
                         "description": "Number of results to return (default: 10)",
                         "default": 10,
                     },
+                    "group_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter results to specific ingestion groups, e.g. ['haiku'], ['llama-fast'], or ['haiku','llama-fast']. Omit to search all groups.",
+                    },
                 },
                 "required": ["query"],
             },
@@ -87,10 +92,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 
     query = arguments["query"]
     num_results = arguments.get("num_results", 10)
+    group_ids = arguments.get("group_ids") or None
 
     client = build_graphiti()
     try:
-        results = await client.search(query, num_results=num_results)
+        results = await client.search(query, num_results=num_results, group_ids=group_ids)
     finally:
         await client.close()
 
