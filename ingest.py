@@ -44,13 +44,61 @@ from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.cross_encoder.client import CrossEncoderClient
 
 
-class CachedAnthropicClient(AnthropicClient):
-    """AnthropicClient with prompt caching on the system message.
+HAIKU_INPUT_COST_PER_M  = 0.80
+HAIKU_OUTPUT_COST_PER_M = 4.00
+HAIKU_CACHE_WRITE_PER_M = 1.00   # 25% surcharge on cache writes
+HAIKU_CACHE_READ_PER_M  = 0.08   # 90% discount on cache reads
 
-    Adds cache_control to the system prompt block so Anthropic caches it
-    across calls — saves ~80% of input tokens since system prompts are
-    identical for all Graphiti extraction calls.
-    """
+MODEL_COSTS = {
+    "claude-haiku-4-5-20251001": (HAIKU_INPUT_COST_PER_M, HAIKU_OUTPUT_COST_PER_M, HAIKU_CACHE_WRITE_PER_M, HAIKU_CACHE_READ_PER_M),
+    "claude-sonnet-4-6":         (3.00, 15.00, 3.75, 0.30),
+    "claude-opus-4-7":           (5.00, 25.00, 6.25, 0.50),
+}
+
+
+class TokenTracker:
+    def __init__(self, model: str):
+        self.model = model
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_write_tokens = 0
+        self.cache_read_tokens = 0
+        self.calls = 0
+
+    def record(self, input_tokens: int, output_tokens: int, cache_write: int, cache_read: int):
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.cache_write_tokens += cache_write
+        self.cache_read_tokens += cache_read
+        self.calls += 1
+
+    def cost(self) -> float:
+        costs = MODEL_COSTS.get(self.model, (1.0, 5.0, 1.25, 0.10))
+        in_cost, out_cost, cw_cost, cr_cost = costs
+        return (
+            (self.input_tokens / 1_000_000) * in_cost +
+            (self.output_tokens / 1_000_000) * out_cost +
+            (self.cache_write_tokens / 1_000_000) * cw_cost +
+            (self.cache_read_tokens / 1_000_000) * cr_cost
+        )
+
+    def report(self):
+        cache_hit_rate = (self.cache_read_tokens / max(self.input_tokens + self.cache_read_tokens, 1)) * 100
+        log.info(
+            f"Token usage — calls: {self.calls} | "
+            f"input: {self.input_tokens:,} | output: {self.output_tokens:,} | "
+            f"cache_write: {self.cache_write_tokens:,} | cache_read: {self.cache_read_tokens:,} | "
+            f"cache_hit_rate: {cache_hit_rate:.1f}% | "
+            f"estimated_cost: ${self.cost():.4f}"
+        )
+
+
+class CachedAnthropicClient(AnthropicClient):
+    """AnthropicClient with prompt caching and token tracking."""
+
+    def __init__(self, *args, tracker: TokenTracker | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.tracker = tracker
 
     async def _generate_response(
         self,
@@ -60,7 +108,7 @@ class CachedAnthropicClient(AnthropicClient):
         model_size: ModelSize = ModelSize.medium,
     ):
         import typing
-        from anthropic.types import MessageParam, ToolChoiceParam, ToolUnionParam
+        from anthropic.types import MessageParam
 
         system_message = messages[0]
         user_messages = [{'role': m.role, 'content': m.content} for m in messages[1:]]
@@ -87,8 +135,9 @@ class CachedAnthropicClient(AnthropicClient):
         output_tokens = result.usage.output_tokens if result.usage else 0
         cache_read = getattr(result.usage, 'cache_read_input_tokens', 0) or 0
         cache_write = getattr(result.usage, 'cache_creation_input_tokens', 0) or 0
-        if cache_read or cache_write:
-            log.debug(f"Cache — read: {cache_read} write: {cache_write}")
+
+        if self.tracker:
+            self.tracker.record(input_tokens, output_tokens, cache_write, cache_read)
 
         return result, input_tokens, output_tokens
 
@@ -171,7 +220,7 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
     return chunks
 
 
-def build_llm(llm_provider: str, model: str) -> AnthropicClient | OpenAIGenericClient:
+def build_llm(llm_provider: str, model: str, tracker: TokenTracker | None = None) -> AnthropicClient | OpenAIGenericClient:
     if llm_provider == "ollama":
         return OpenAIGenericClient(LLMConfig(
             model=model,
@@ -182,11 +231,12 @@ def build_llm(llm_provider: str, model: str) -> AnthropicClient | OpenAIGenericC
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
         raise ValueError("ANTHROPIC_API_KEY not set")
-    return CachedAnthropicClient(LLMConfig(model=model, api_key=api_key))
+    return CachedAnthropicClient(LLMConfig(model=model, api_key=api_key), tracker=tracker)
 
 
 async def ingest(repo: str | None, path: Path | None, model: str, embedder_name: str, llm_provider: str, group_id: str | None = None):
-    llm = build_llm(llm_provider, model)
+    tracker = TokenTracker(model) if llm_provider == "anthropic" else None
+    llm = build_llm(llm_provider, model, tracker=tracker)
     embedder = build_embedder(embedder_name)
     cross_encoder = PassthroughReranker()
 
@@ -238,6 +288,8 @@ async def ingest(repo: str | None, path: Path | None, model: str, embedder_name:
                 log.error(f"ERROR {episode_name}: {e}")
 
     log.info(f"Done. {total_episodes} episodes ingested.")
+    if tracker:
+        tracker.report()
     await client.close()
 
 
