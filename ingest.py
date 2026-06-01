@@ -116,6 +116,7 @@ class CachedAnthropicClient(AnthropicClient):
         max_creation_tokens = self._resolve_max_tokens(max_tokens, self.model)
         tools, tool_choice = self._create_tool(response_model)
 
+        import json as _json
         result = await self.client.messages.create(
             system=[{
                 "type": "text",
@@ -128,7 +129,6 @@ class CachedAnthropicClient(AnthropicClient):
             model=self.model,
             tools=tools,
             tool_choice=tool_choice,
-            betas=["prompt-caching-2024-07-31"],
         )
 
         input_tokens = result.usage.input_tokens if result.usage else 0
@@ -139,7 +139,17 @@ class CachedAnthropicClient(AnthropicClient):
         if self.tracker:
             self.tracker.record(input_tokens, output_tokens, cache_write, cache_read)
 
-        return result, input_tokens, output_tokens
+        # Parse tool use response — same logic as base class _generate_response
+        for content_item in result.content:
+            if content_item.type == 'tool_use':
+                tool_args = content_item.input if isinstance(content_item.input, dict) else _json.loads(str(content_item.input))
+                return tool_args, input_tokens, output_tokens
+
+        for content_item in result.content:
+            if content_item.type == 'text':
+                return self._extract_json_from_text(content_item.text), input_tokens, output_tokens
+
+        raise ValueError(f'Could not extract structured data from model response: {result.content}')
 
 DUMP_DIR = Path(__file__).parent / "dump"
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
