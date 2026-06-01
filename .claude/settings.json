@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./progress.sh)",
+      "Bash(ollama list)",
+      "Bash(ollama ps)",
+      "Bash(ollama pull *)",
+      "Bash(vm_stat *)",
+      "Bash(sysctl *)",
+      "Bash(system_profiler *)"
+    ]
+  }
+}
