@@ -22,7 +22,7 @@ A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX re
 | Ingestion pipeline | Complete — `ingest.py` |
 | Query CLI | Complete — `query.py` |
 | MCP server (Claude Desktop) | Complete — `mcp_server_stdio.py` |
-| Benchmarks run | `haiku` (107 eps), `llama-fast` (107 eps), `llama` (16 eps), `haiku-cached` (107 eps) |
+| Benchmarks run | `haiku` (107 eps), `llama-fast` (107 eps), `llama` (16 eps), `haiku-cached` (107 eps), `haiku-v2` (58 eps), `sonnet-v2` (58 eps) |
 | Full corpus ingested | Not yet — only `kdb-x-mcp-server` repo done |
 | Prompt caching | Implemented but ineffective for long-form content (see TRADEOFFS.md) |
 
@@ -33,6 +33,8 @@ A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX re
 | llama-fast | 107 | 161 | 85 | kdb-x-mcp-server, local model |
 | llama | 16 | ~20 | ~15 | kdb-x-mcp-server, partial run |
 | haiku-cached | 107 | ~100 | ~170 | kdb-x-mcp-server, caching test |
+| haiku-v2 | 58 | 164 | 258 | kdb-x-mcp-server, 3000-char chunks, KX domain context |
+| sonnet-v2 | 58 | 219 | 435 | kdb-x-mcp-server, 3000-char chunks, KX domain context, cache 36.8% |
 
 ---
 
@@ -162,6 +164,7 @@ Never use `OpenAIClient` with Ollama — it targets the Responses API (`/v1/resp
 - Graphiti's system prompts are ~15 tokens — caching never fires
 - Injecting a 6k-token KX domain prefix enables caching but adds more cost than it saves (long-form content)
 - **Will save ~88% for future short-form ingestion (Slack, Freshdesk)** — infrastructure already in place
+- Sonnet 4.6 caching fires with KX domain context (~1,612 tokens clears 1,024-token threshold) — 36.8% hit rate observed on sonnet-v2 run
 
 ### Local Ollama models: two required fixes
 1. Set `small_model=model` in `LLMConfig` — otherwise Graphiti defaults to `gpt-4.1-nano` (404)
@@ -170,7 +173,7 @@ Never use `OpenAIClient` with Ollama — it targets the Responses API (`/v1/resp
 ### Token tracking
 `TokenTracker` logs at end of each run:
 ```
-Token usage — calls: 486 | input: 2,259,225 | output: 57,614 | cache_write: 0 | cache_read: 0 | cache_hit_rate: 0.0% | estimated_cost: $2.0378
+Token usage — calls: 628 | input: 2,329,448 | output: 113,000 | cache_write: 47,616 | cache_read: 1,355,561 | cache_hit_rate: 36.8% | estimated_cost: $9.2686
 ```
 
 ---
@@ -178,7 +181,8 @@ Token usage — calls: 486 | input: 2,259,225 | output: 57,614 | cache_write: 0 
 ## What To Do Next
 
 ### Immediate
-- [ ] Ingest full 8-repo corpus: `python3 ingest.py --model haiku --group-id production`
+- [ ] Decide production model: sonnet-v2 quality (219 entities, 435 edges, 7.5 edges/ep) vs haiku-v2 cost ($3.05 vs $9.27 per repo)
+- [ ] Ingest full 8-repo corpus: `python3 ingest.py --model sonnet --group-id production` (sonnet) or `--model haiku` (budget)
 - [ ] Prune test files / changelogs from `nvidia-kx-samples` and `docs` before ingesting — could cut ~30% cost
 
 ### When adding Slack / Freshdesk
