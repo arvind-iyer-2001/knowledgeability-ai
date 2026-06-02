@@ -83,10 +83,13 @@ All runs on `kdb-x-mcp-server` (26 files) except gemma4. Results from timestampe
 | llama3.1:8b | Local | 16 ¹ | — | 89.2s/ep | 0 | — | $0 |
 | llama3.1-fast ² | Local | 107 | 77.0 min | 43.2s/ep | 0 | 247 | $0 |
 | gemma4:latest | Local | 43 ³ | — | 85.8s/ep | 5 | — | $0 |
+| Haiku 4.5 v2 | Cloud | 58 | ~13 min | ~13.4s/ep | 0 | 20 | $3.05 |
+| Sonnet 4.6 v2 | Cloud | 58 | ~27 min | ~27.9s/ep | 0 | 3 | $9.27 |
 
 ¹ Terminated — too slow  
 ² Custom Ollama modelfile, context window 4,096 tokens → 2× faster than default llama3.1:8b  
-³ Run on `docs` repo (451 files); abandoned — recurring JSON parse failures
+³ Run on `docs` repo (451 files); abandoned — recurring JSON parse failures  
+⁴ v2 runs use 3,000-char chunks + KX domain context injection (was 1,500 chars)
 
 ### Extraction quality (107-episode runs)
 
@@ -94,6 +97,10 @@ All runs on `kdb-x-mcp-server` (26 files) except gemma4. Results from timestampe
 |---|---|---|---|---|
 | Haiku 4.5 | 101 | 179 | 1.67 | High — precise, domain-relevant |
 | llama3.1-fast | 161 | 85 | 0.79 | Low — hallucinations throughout |
+| Haiku 4.5 v2 ⁴ | 164 | 258 | 4.45 | Good — larger chunks improve context |
+| Sonnet 4.6 v2 ⁴ | 219 | 435 | 7.50 | Best — precise, richest graph |
+
+**v2 settings impact (3,000-char chunks + KX domain context):** Haiku v2 extracts 164 entities / 258 edges (4.45 edges/ep) vs 98/175/1.64 on old settings — 2.6× more entities, 2.5× more edges from same corpus. Sonnet v2 extracts 219 entities / 435 edges (7.50 edges/ep) — 4.5× edges/episode vs old baseline. Larger chunks give LLM richer context per episode; domain context injection guides entity typing. Sonnet caching fired at 36.8% hit rate (KX context clears Sonnet's 1,024-token threshold; Haiku requires 4,096 — still not met).
 
 **llama3.1-fast hallucinations (247 warnings):**
 - 130+ fabricated relations with no connection to MCP server docs: `PLAYS_GAMES_ON` (39×), `FEELS_HAPPY_ABOUT` (23×), `LIVES_IN` (10×)
@@ -150,7 +157,7 @@ Graphiti dedup scoped to `group_id` namespace. Two agents on same namespace → 
 
 ## What PoC Validates
 
-1. **Extraction quality with capable model is high.** Haiku 4.5: 101 entities, 179 typed relationships, 0 errors, 0 hallucinations. 1.67 edges/episode — graph captures how things connect, not just what exists.
+1. **Extraction quality with capable model is high.** Haiku 4.5 v2: 164 entities, 258 typed relationships, 4.45 edges/episode. Sonnet 4.6 v2: 219 entities, 435 typed relationships, 7.50 edges/episode — 4.5× richer than original baseline. Larger chunks (3,000 chars) and domain context injection drive the improvement.
 
 2. **Local models tested (llama3.1-fast, gemma4) not viable at current config.** llama3.1-fast: 247 warnings, fabricated relationships, 58 dedup failures. gemma4: invalid structured output. Scope limited to models tested — stronger local models (Qwen, Deepseek V3/V4) untested and may perform differently.
 
