@@ -4,6 +4,7 @@ Launched via mcp_kx.bat on Windows.
 """
 
 import asyncio
+import difflib
 import os
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -103,11 +104,39 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if not results:
         return [types.TextContent(type="text", text="No results found in the knowledge graph.")]
 
-    lines = [f"Knowledge graph results for: {query}\n"]
-    for i, edge in enumerate(results, 1):
-        lines.append(f"{i}. [{edge.name}] {edge.fact}")
-        if edge.valid_at:
-            lines.append(f"   (valid from: {edge.valid_at.date()})")
+    # Drop near-duplicate facts — extraction often emits the same fact twice
+    # under slightly different relation names (e.g. INTERACTS_WITH vs PROVIDES_ACCESS_TO).
+    deduped = []
+    for edge in results:
+        if not any(difflib.SequenceMatcher(None, edge.fact, kept.fact).ratio() > 0.85 for kept in deduped):
+            deduped.append(edge)
+
+    # Group by source repo (group_id) so the synthesizer can organize by topic
+    by_group: dict[str, list] = {}
+    for edge in deduped:
+        by_group.setdefault(edge.group_id, []).append(edge)
+
+    lines = [
+        f"Knowledge graph results for: {query}\n",
+        "Raw graph facts below (subject -[RELATION]-> object form, grouped by source repo).",
+        "Write the answer as a well-structured technical brief:",
+        "- One ## heading per sub-topic or sub-question, in the order asked",
+        "- Paraphrase facts into natural sentences grouped by theme — never dump raw [RELATION] lines verbatim",
+        "- Bold key identifiers: function/tool names, parameters, versions, flags",
+        "- Merge near-duplicate facts; if facts conflict, say so rather than silently picking one",
+        "- When comparing two things, end the section with one 'bottom line' sentence on when to use which",
+        "- Briefly define KX-specific jargon/acronyms on first use",
+        "- Mention source repo only when it disambiguates or is relevant",
+        "",
+    ]
+    for grp, edges in by_group.items():
+        lines.append(f"## {grp}")
+        for edge in edges:
+            line = f"- [{edge.name}] {edge.fact}"
+            if edge.valid_at:
+                line += f" (valid from: {edge.valid_at.date()})"
+            lines.append(line)
+        lines.append("")
 
     return [types.TextContent(type="text", text="\n".join(lines))]
 
