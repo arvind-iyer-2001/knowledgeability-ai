@@ -201,3 +201,6 @@ PoC establishes: working ingestion pipeline, live MCP tool, benchmarked extracti
 - Graphiti: https://github.com/getzep/graphiti
 - Technical detail: [WHAT_WE_BUILT.md](WHAT_WE_BUILT.md)
 - Design decisions: [TRADEOFFS.md](TRADEOFFS.md)
+- First production run + corrected cost model: [PRODUCTION_INGEST_REPORT.md](PRODUCTION_INGEST_REPORT.md)
+
+> **Note:** cost figures in this report predate the 2026-06-11 pricing fix (Haiku 4.5 was billed at Haiku 3.5 rates in the tracker — actual costs ~25% higher). See PRODUCTION_INGEST_REPORT.md for corrected figures and full-corpus projection (~$457 vs ~$293 here).

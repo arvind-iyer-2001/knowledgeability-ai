@@ -39,8 +39,11 @@ ollama pull nomic-embed-text
 ```
 
 **3. Install dependencies**
+
+Use [`uv`](https://github.com/astral-sh/uv) — system/Homebrew Python blocks global `pip install`:
 ```bash
-pip install graphiti-core anthropic python-dotenv uvicorn starlette mcp "graphiti-core[voyageai]"
+uv venv .venv
+uv pip install --python .venv/bin/python graphiti-core anthropic python-dotenv uvicorn starlette mcp "graphiti-core[voyageai]" matplotlib
 ```
 
 **4. Configure environment**
@@ -75,28 +78,32 @@ done
 ## Ingestion
 
 ```bash
-# Full corpus (all repos)
-python3 ingest.py
+# Preview cost/time/episode estimate without running (no LLM calls)
+python3 ingest.py --repo pykx --dry-run
 
 # Single repo
-python3 ingest.py --repo pykx
+python3 ingest.py --repo pykx --model haiku --group-id production
+
+# Multiple repos in one run (repeatable --repo)
+python3 ingest.py --repo kx-skills --repo kdb-x-mcp-server --model haiku --group-id production
+
+# Full corpus (all repos under dump/)
+python3 ingest.py --model haiku --group-id production
 
 # Specific path
-python3 ingest.py --path dump/docs/docs/wp
-
-# Model selection (default: opus)
-python3 ingest.py --repo pykx --model haiku     # fast/cheap
-python3 ingest.py --repo pykx --model sonnet    # balanced
-python3 ingest.py --repo pykx --model opus      # best quality
+python3 ingest.py --path dump/docs/docs/wp --model haiku
 
 # Embedder selection (default: ollama)
 python3 ingest.py --repo pykx --embedder voyage  # Voyage AI (requires VOYAGE_API_KEY)
 ```
 
-Check ingestion progress:
+`--model` choices: `haiku` (recommended — fastest, cheapest, 0 errors; see [TRADEOFFS.md](TRADEOFFS.md)), `sonnet`, `opus` (default).
+
+Check ingestion progress (live, updated per episode):
 ```bash
-./progress.sh
+cat logs/progress_<timestamp>.log
 ```
+Full per-episode log: `logs/ingest_<timestamp>.log`. Neo4j node/edge counts: `./progress.sh`.
 
 ## Querying
 
@@ -104,95 +111,43 @@ Check ingestion progress:
 # One-shot
 python3 query.py "What compression options exist for kdb+?"
 
+# Filter by ingestion group (repeatable)
+python3 query.py --group production "How does tickerplant log recovery work?"
+
 # Interactive mode
 python3 query.py
 ```
 
 ## MCP Server
 
-Exposes `search_kx_knowledge` tool for Claude Desktop.
+Exposes `search_kx_knowledge` tool (`query`, `num_results`, `group_ids`).
 
-**SSE server** (for HTTP clients):
+**stdio server** (Claude Desktop, macOS — current setup):
+```json
+{
+  "mcpServers": {
+    "kx-knowledge-graph": {
+      "command": "/path/to/.venv/bin/python3",
+      "args": ["/path/to/mcp_server_stdio.py"]
+    }
+  }
+}
+```
+Config at `~/Library/Application Support/Claude/claude_desktop_config.json`. Restart Claude Desktop after editing. Loads `.env` automatically — no `env` block needed.
+
+**SSE server** (generic HTTP MCP clients):
 ```bash
 python3 mcp_server.py
 # Runs on http://localhost:8765/sse
 ```
 
-**stdio server** (for Claude Desktop on Windows/WSL):
-```bash
-python3 mcp_server_stdio.py
-```
+## More
 
-Claude Desktop config (`%APPDATA%\Claude\claude_desktop_config.json`):
-```json
-{
-  "mcpServers": {
-    "kx-knowledge-graph": {
-      "command": "C:\\Windows\\System32\\wsl.exe",
-      "args": ["bash", "-c", "cd /home/aiyer/knowledgeability-ai && python3 mcp_server_stdio.py"]
-    }
-  }
-}
-```
-
-## How This Was Built
-
-Chronological steps taken to build the system:
-
-### Step 1 — Problem definition
-
-Goal: make KX/kdb+ documentation queryable by Claude via an MCP tool. Plain RAG loses relationships between concepts (e.g. `kdb+tick` → `tickerplant` → `RDB` → `HDB`). Chose **Graphiti** (getzep/graphiti) for hybrid retrieval — it stores both embeddings and an explicit knowledge graph in Neo4j, so searches return typed facts with provenance rather than raw chunks.
-
-### Step 2 — Infrastructure
-
-Spun up Neo4j 5 in Docker (ports 7474/7687). Set up Ollama locally and pulled `nomic-embed-text` for free local embeddings with no API cost during development.
-
-### Step 3 — Corpus collection
-
-Cloned 8 KX GitHub repos (shallow, `--depth=1`) into `dump/`:
-- `docs`, `pykx`, `kx-sdk-reference-architectures`, `kdb-x-mcp-server`, `kdbai-mcp-server`, `kx-skills`, `nvidia-kx-samples`, `kx-vscode`
-
-Covered file types: `.md`, `.py`, `.q`, `.rst`, `.txt`, `.yaml`, `.yml`, `.json`.
-
-### Step 4 — Ingestion pipeline (`ingest.py`)
-
-Built a file walker that:
-1. Recursively collects files from `dump/` (filtering by extension, skipping `.git`/`__pycache__` etc.)
-2. Chunks each file at 1500 chars with 200-char overlap
-3. Feeds each chunk to `graphiti.add_episode()` — Graphiti calls Claude to extract entities/relationships and stores them as graph edges with vector embeddings
-
-Added `--repo`, `--path`, `--model` (haiku/sonnet/opus), and `--embedder` (ollama/voyage) flags for flexible partial ingestion. Implemented `PassthroughReranker` as a no-op `CrossEncoderClient` since no cross-encoder model was available locally.
-
-### Step 5 — Progress monitoring (`progress.sh`)
-
-Shell script to poll Neo4j node/edge counts so ingestion progress is visible without parsing Python output.
-
-### Step 6 — Query CLI (`query.py`)
-
-Built a thin wrapper around `graphiti.search()` with two modes:
-- **One-shot**: `python3 query.py "question"` — prints ranked facts
-- **Interactive REPL**: `python3 query.py` — loop until `quit`
-
-Uses Haiku for query-time entity extraction (cheap, fast) and Ollama for embeddings.
-
-### Step 7 — MCP server, SSE transport (`mcp_server.py`)
-
-Wrapped the Graphiti search in an MCP `Server` exposing one tool: `search_kx_knowledge`. Used SSE transport (Starlette + uvicorn) on port 8765 so any HTTP MCP client can connect. This was the initial transport for testing.
-
-### Step 8 — MCP server, stdio transport (`mcp_server_stdio.py`)
-
-Claude Desktop on Windows cannot reach WSL localhost over SSE reliably. Built a stdio-transport variant that Claude Desktop launches directly via `wsl.exe`, so the process speaks MCP over stdin/stdout instead of HTTP. Same tool implementation, different transport layer.
-
-### Key design decisions
-
-| Decision | Reason |
-|----------|--------|
-| Graphiti over plain vector RAG | Preserves typed relationships between KX concepts across documents |
-| Ollama as default embedder | Zero API cost; Voyage AI available as a drop-in upgrade |
-| Two MCP transport modes | SSE for generic HTTP clients; stdio for Claude Desktop on Windows/WSL |
-| `PassthroughReranker` | No local cross-encoder available; avoids a hard dependency |
-| Haiku at query time | Fast and cheap for entity extraction; quality difference vs Opus is negligible for search |
-| Opus as default at ingest time | Entity/relationship extraction quality matters most during ingestion |
+- [AGENT_HANDOFF.md](AGENT_HANDOFF.md) — current project status, setup from scratch, file map, troubleshooting
+- [WHAT_WE_BUILT.md](WHAT_WE_BUILT.md) — full system description and corpus overview
+- [TRADEOFFS.md](TRADEOFFS.md) — model/caching/architecture decisions with numbers
+- [PRODUCTION_INGEST_REPORT.md](PRODUCTION_INGEST_REPORT.md) — latest production ingest run, current pricing
+- [REPORT.md](REPORT.md) — original PoC report
 
 ## Environment Variables
 

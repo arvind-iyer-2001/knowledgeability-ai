@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -22,7 +23,9 @@ load_dotenv()
 LOG_DIR = Path(__file__).parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-_log_file = LOG_DIR / f"ingest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+_log_file = LOG_DIR / f"ingest_{_timestamp}.log"
+_progress_file = LOG_DIR / f"progress_{_timestamp}.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
@@ -44,10 +47,10 @@ from graphiti_core.embedder.client import EmbedderClient
 from graphiti_core.cross_encoder.client import CrossEncoderClient
 
 
-HAIKU_INPUT_COST_PER_M  = 0.80
-HAIKU_OUTPUT_COST_PER_M = 4.00
-HAIKU_CACHE_WRITE_PER_M = 1.00   # 25% surcharge on cache writes
-HAIKU_CACHE_READ_PER_M  = 0.08   # 90% discount on cache reads
+HAIKU_INPUT_COST_PER_M  = 1.00
+HAIKU_OUTPUT_COST_PER_M = 5.00
+HAIKU_CACHE_WRITE_PER_M = 1.25   # 25% surcharge on cache writes
+HAIKU_CACHE_READ_PER_M  = 0.10   # 90% discount on cache reads
 
 MODEL_COSTS = {
     "claude-haiku-4-5-20251001": (HAIKU_INPUT_COST_PER_M, HAIKU_OUTPUT_COST_PER_M, HAIKU_CACHE_WRITE_PER_M, HAIKU_CACHE_READ_PER_M),
@@ -313,6 +316,78 @@ def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) 
     return chunks
 
 
+# Calibration from the production ingest run (group_id=production: kx-skills,
+# kdb-x-mcp-server, kdbai-mcp-server; 170 episodes, Haiku 4.5, 2026-06-11).
+# Cost is from actual Anthropic billing ($12.31), not the tracker's pre-fix estimate.
+CALIBRATION_COST_PER_EPISODE = 12.31 / 170   # $12.31 / 170 episodes (actual billed)
+CALIBRATION_SECONDS_PER_EPISODE = 2524 / 170 # 42m04s / 170 episodes
+CALIBRATION_CALLS_PER_EPISODE = 1955 / 170   # 1,955 LLM calls / 170 episodes
+
+
+def estimate_corpus(files: list[Path]) -> dict:
+    total_chars = 0
+    total_episodes = 0
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8", errors="ignore").strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        total_chars += len(text)
+        total_episodes += len(chunk_text(text))
+    return {
+        "files": len(files),
+        "chars": total_chars,
+        "episodes": total_episodes,
+        "est_llm_calls": round(total_episodes * CALIBRATION_CALLS_PER_EPISODE),
+        "est_cost": total_episodes * CALIBRATION_COST_PER_EPISODE,
+        "est_seconds": total_episodes * CALIBRATION_SECONDS_PER_EPISODE,
+    }
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(int(seconds), 0)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m{s:02d}s"
+    return f"{m}m{s:02d}s"
+
+
+def format_estimate(est: dict) -> str:
+    return (
+        f"files={est['files']} | chars={est['chars']:,} | episodes={est['episodes']:,} | "
+        f"est. LLM calls≈{est['est_llm_calls']:,} | "
+        f"est. cost≈${est['est_cost']:.2f} | "
+        f"est. time≈{format_duration(est['est_seconds'])} "
+        f"(calibrated: ${CALIBRATION_COST_PER_EPISODE:.4f}/ep, "
+        f"{CALIBRATION_SECONDS_PER_EPISODE}s/ep, {CALIBRATION_CALLS_PER_EPISODE:.1f} calls/ep)"
+    )
+
+
+def write_progress(path: Path, start_time: float, done: int, total: int, tracker: "TokenTracker | None", est: dict, final: bool = False):
+    elapsed = time.monotonic() - start_time
+    pct = (done / total * 100) if total else 0.0
+    eta = (elapsed / done * (total - done)) if done else est["est_seconds"]
+    lines = [
+        "=== Ingest Progress ===",
+        f"Status: {'DONE' if final else 'running'}",
+        f"Updated: {datetime.now(timezone.utc).isoformat()}",
+        f"Elapsed: {format_duration(elapsed)}",
+        f"Episodes: {done:,} / {total:,} ({pct:.1f}%)",
+    ]
+    if tracker:
+        lines += [
+            f"LLM calls: {tracker.calls:,} (est. total ≈{est['est_llm_calls']:,})",
+            f"Tokens: in={tracker.input_tokens:,} out={tracker.output_tokens:,} "
+            f"cache_write={tracker.cache_write_tokens:,} cache_read={tracker.cache_read_tokens:,}",
+            f"Cost so far: ${tracker.cost():.4f} (est. total ≈${est['est_cost']:.2f})",
+        ]
+    lines.append("ETA: done" if final else (f"ETA: {format_duration(eta)} remaining" if done else "ETA: calculating..."))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def build_llm(llm_provider: str, model: str, tracker: TokenTracker | None = None) -> AnthropicClient | OpenAIGenericClient:
     if llm_provider == "ollama":
         return OpenAIGenericClient(LLMConfig(
@@ -327,7 +402,23 @@ def build_llm(llm_provider: str, model: str, tracker: TokenTracker | None = None
     return CachedAnthropicClient(LLMConfig(model=model, api_key=api_key), tracker=tracker)
 
 
-async def ingest(repo: str | None, path: Path | None, model: str, embedder_name: str, llm_provider: str, group_id: str | None = None):
+async def ingest(repos: list[str] | None, path: Path | None, model: str, embedder_name: str, llm_provider: str, group_id: str | None = None, dry_run: bool = False):
+    if repos:
+        files = []
+        for r in repos:
+            files.extend(collect_files(DUMP_DIR, r, None))
+    else:
+        files = collect_files(DUMP_DIR, None, path)
+
+    est = estimate_corpus(files)
+    log.info(f"Selected: {repos or path or 'all'}")
+    log.info("=== Pre-flight estimate ===")
+    log.info(format_estimate(est))
+
+    if dry_run:
+        log.info("Dry run requested — exiting before ingestion.")
+        return
+
     tracker = TokenTracker(model) if llm_provider == "anthropic" else None
     llm = build_llm(llm_provider, model, tracker=tracker)
     embedder = build_embedder(embedder_name)
@@ -344,14 +435,16 @@ async def ingest(repo: str | None, path: Path | None, model: str, embedder_name:
 
     effective_group_id = group_id or llm_provider
     log.info(f"Group ID: {effective_group_id}")
-
-    files = collect_files(DUMP_DIR, repo, path)
     log.info(f"Found {len(files)} files")
+    log.info(f"Progress file: {_progress_file}")
+
+    start_time = time.monotonic()
+    write_progress(_progress_file, start_time, 0, est["episodes"], tracker, est)
 
     total_episodes = 0
     for file_path in files:
         rel = file_path.relative_to(DUMP_DIR) if file_path.is_relative_to(DUMP_DIR) else file_path
-        repo_name = rel.parts[0] if file_path.is_relative_to(DUMP_DIR) else (repo or "unknown")
+        repo_name = rel.parts[0] if file_path.is_relative_to(DUMP_DIR) else (repos[0] if repos else "unknown")
 
         try:
             text = file_path.read_text(encoding="utf-8", errors="ignore").strip()
@@ -380,16 +473,20 @@ async def ingest(repo: str | None, path: Path | None, model: str, embedder_name:
             except Exception as e:
                 log.error(f"ERROR {episode_name}: {e}")
 
+            write_progress(_progress_file, start_time, total_episodes, est["episodes"], tracker, est)
+
     log.info(f"Done. {total_episodes} episodes ingested.")
     if tracker:
         tracker.report()
+    write_progress(_progress_file, start_time, total_episodes, est["episodes"], tracker, est, final=True)
     await client.close()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ingest KX repo files into Graphiti")
-    parser.add_argument("--repo", help="Repo name under dump/ (e.g. pykx)")
+    parser.add_argument("--repo", action="append", help="Repo name under dump/ (e.g. pykx). Repeatable: --repo pykx --repo docs")
     parser.add_argument("--path", help="Specific file or directory path to ingest")
+    parser.add_argument("--dry-run", action="store_true", help="Print pre-flight estimate (files, episodes, est. cost/time/calls) and exit")
     parser.add_argument(
         "--model", choices=list(ANTHROPIC_MODELS.keys()), default="opus",
         help="Anthropic model: opus (best), sonnet (balanced), haiku (fast/cheap). Ignored when --llm ollama.",
@@ -423,4 +520,4 @@ if __name__ == "__main__":
         model_id = ANTHROPIC_MODELS[args.model]
         log.info(f"LLM: anthropic/{args.model} ({model_id}) | Embedder: {args.embedder} | Log: {_log_file}")
 
-    asyncio.run(ingest(repo=args.repo, path=path_arg, model=model_id, embedder_name=args.embedder, llm_provider=args.llm, group_id=args.group_id))
+    asyncio.run(ingest(repos=args.repo, path=path_arg, model=model_id, embedder_name=args.embedder, llm_provider=args.llm, group_id=args.group_id, dry_run=args.dry_run))

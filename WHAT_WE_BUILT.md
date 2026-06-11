@@ -19,8 +19,8 @@ KX knowledge graph system using Graphiti + Neo4j, with local and cloud LLM suppo
 
 ## Environment Setup
 
-- Python venv at `.venv/` (required — Homebrew Python blocks global pip installs)
-- Dependencies in `requirements.txt`
+- Python venv at `.venv/` via `uv venv .venv` (required — Homebrew Python blocks global pip installs)
+- Dependencies: `uv pip install --python .venv/bin/python graphiti-core anthropic python-dotenv mcp "graphiti-core[voyageai]" matplotlib`
 - Secrets in `.env`: `ANTHROPIC_API_KEY`, `NEO4J_URI/USER/PASSWORD`, `OLLAMA_BASE_URL`
 - Neo4j running locally via Docker on bolt://localhost:7687
 - Ollama running locally on http://localhost:11434 with `nomic-embed-text` for embeddings
@@ -156,14 +156,16 @@ Every ingestion run writes a timestamped log to `logs/ingest_YYYYMMDD_HHMMSS.log
 
 ## Corpus Overview
 
-| Repo | Files | Chars | Est. Cost (Haiku) |
-|---|---|---|---|
-| kdb-x-mcp-server | 25 | 110k | $2.04 ✓ |
-| kdbai-mcp-server | 24 | 106k | ~$2.00 |
-| kx-skills | 27 | 144k | ~$2.67 |
-| kx-sdk-reference-architectures | 148 | 332k | ~$6.16 |
-| kx-vscode | 26 | 554k | ~$10.27 |
-| pykx | 253 | 2.9M | ~$53 |
-| docs | 449 | 4.2M | ~$78 |
-| nvidia-kx-samples | 529 | 7.5M | ~$139 |
-| **Total** | **1,481** | **15.8M** | **~$293** |
+Costs below use the corrected Haiku 4.5 pricing ($1.00/$5.00 per Mtok) and calibration ($0.0724/episode), derived from the `group_id=production` run — see [PRODUCTION_INGEST_REPORT.md](PRODUCTION_INGEST_REPORT.md). Figures from `ingest.py --dry-run --repo <repo>`.
+
+| Repo | Files | Chars | Episodes | Est. Cost (Haiku) | Status |
+|---|---|---|---|---|---|
+| kdb-x-mcp-server | 26 | 123k | 58 | $4.20 | ✓ ingested (group_id=production) |
+| kdbai-mcp-server | 24 | 106k | 49 | $3.55 | ✓ ingested (group_id=production) |
+| kx-skills | 27 | 143k | 63 | $4.56 | ✓ ingested (group_id=production) |
+| kx-sdk-reference-architectures | 148 | 332k | 209 | $15.13 | not yet |
+| kx-vscode | 35 | 570k | 218 | $15.79 | not yet |
+| pykx | 261 | 2.9M | 1,136 | $82.26 | not yet |
+| docs | 451 | 4.3M | 1,690 | $122.38 | not yet |
+| nvidia-kx-samples | 543 | 7.6M | 2,885 | $208.91 | not yet |
+| **Total** | **1,515** | **15.9M** | **6,308** | **~$457** | **170/6,308 episodes done ($12.31 actual)** |

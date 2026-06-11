@@ -11,6 +11,7 @@ A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX re
 **Read these first:**
 - [WHAT_WE_BUILT.md](WHAT_WE_BUILT.md) — full system description, CLI flags, benchmarks, corpus overview
 - [TRADEOFFS.md](TRADEOFFS.md) — every design decision with numbers: model selection, caching, multi-agent options
+- [PRODUCTION_INGEST_REPORT.md](PRODUCTION_INGEST_REPORT.md) — first production run (170 eps, group_id=production), pricing bug fix, recalibrated full-corpus cost (~$457)
 
 ---
 
@@ -22,9 +23,10 @@ A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX re
 | Ingestion pipeline | Complete — `ingest.py` |
 | Query CLI | Complete — `query.py` |
 | MCP server (Claude Desktop) | Complete — `mcp_server_stdio.py` |
-| Benchmarks run | `haiku` (107 eps), `llama-fast` (107 eps), `llama` (16 eps), `haiku-cached` (107 eps), `haiku-v2` (58 eps), `sonnet-v2` (58 eps) |
-| Full corpus ingested | Not yet — only `kdb-x-mcp-server` repo done |
+| Benchmarks run | `haiku` (107 eps), `llama-fast` (107 eps), `llama` (16 eps), `haiku-cached` (107 eps), `haiku-v2` (58 eps), `sonnet-v2` (58 eps), `production` (170 eps) |
+| Full corpus ingested | Not yet — 3/8 repos done (`production` group_id) |
 | Prompt caching | Implemented but ineffective for long-form content (see TRADEOFFS.md) |
+| Cost tracker pricing | Fixed 2026-06-11 — was using Haiku 3.5 rates ($0.80/$4.00 per Mtok) for Haiku 4.5 (correct: $1.00/$5.00). See PRODUCTION_INGEST_REPORT.md |
 
 ### Neo4j groups in the graph right now
 | group_id | Episodes | Entities | Edges | Notes |
@@ -35,6 +37,7 @@ A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX re
 | haiku-cached | 107 | ~100 | ~170 | kdb-x-mcp-server, caching test |
 | haiku-v2 | 58 | 164 | 258 | kdb-x-mcp-server, 3000-char chunks, KX domain context |
 | sonnet-v2 | 58 | 219 | 435 | kdb-x-mcp-server, 3000-char chunks, KX domain context, cache 36.8% |
+| production | 170 | 729 | 824 | kx-skills + kdb-x-mcp-server + kdbai-mcp-server, Haiku 4.5, $12.31 actual |
 
 ---
 
@@ -47,12 +50,11 @@ A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX re
 
 ### 1. Venv + dependencies
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install graphiti-core anthropic python-dotenv mcp "graphiti-core[voyageai]" matplotlib
+uv venv .venv
+uv pip install --python .venv/bin/python graphiti-core anthropic python-dotenv mcp "graphiti-core[voyageai]" matplotlib
 ```
 
-> **Do not use system Python or Homebrew Python** — externally managed environment will block pip.
+> **Do not use system Python or Homebrew Python** — externally managed environment will block pip. Use `uv`, not `python3 -m venv` + `pip`.
 
 ### 2. Neo4j
 ```bash
@@ -94,10 +96,11 @@ source .venv/bin/activate
 python3 ingest.py --repo kdb-x-mcp-server --model haiku --group-id haiku
 ```
 
-### Ingest full corpus
+### Ingest full corpus (remaining 5 repos)
 ```bash
-python3 ingest.py --model haiku --group-id production
-# ~31 hours, ~$293 at Haiku pricing
+python3 ingest.py --repo kx-sdk-reference-architectures --repo kx-vscode --repo pykx --repo docs --repo nvidia-kx-samples --model haiku --group-id production
+# ~24h, ~$444 at Haiku pricing (corrected) — see PRODUCTION_INGEST_REPORT.md
+# 3/8 repos (kx-skills, kdb-x-mcp-server, kdbai-mcp-server) already done: 170 eps, $12.31, group_id=production
 ```
 
 ### Monitor progress
@@ -181,9 +184,10 @@ Token usage — calls: 628 | input: 2,329,448 | output: 113,000 | cache_write: 4
 ## What To Do Next
 
 ### Immediate
-- [ ] Decide production model: sonnet-v2 quality (219 entities, 435 edges, 7.5 edges/ep) vs haiku-v2 cost ($3.05 vs $9.27 per repo)
-- [ ] Ingest full 8-repo corpus: `python3 ingest.py --model sonnet --group-id production` (sonnet) or `--model haiku` (budget)
-- [ ] Prune test files / changelogs from `nvidia-kx-samples` and `docs` before ingesting — could cut ~30% cost
+- [x] First production batch ingested: `kx-skills` + `kdb-x-mcp-server` + `kdbai-mcp-server`, Haiku 4.5, group_id=production (170 eps, $12.31, 729 entities, 824 edges) — 2026-06-11
+- [ ] Decide production model for remaining 5 repos: sonnet-v2 quality (219 entities, 435 edges, 7.5 edges/ep) vs haiku cost (~$444 for remaining repos at corrected pricing)
+- [ ] Ingest remaining repos: `python3 ingest.py --repo kx-sdk-reference-architectures --repo kx-vscode --repo pykx --repo docs --repo nvidia-kx-samples --model haiku --group-id production`
+- [ ] Prune test files / changelogs from `nvidia-kx-samples` ($208.91, 46% of remaining cost) and `docs` ($122.38) before ingesting — could cut ~30% cost
 
 ### When adding Slack / Freshdesk
 - [ ] Enable `CachedAnthropicClient` caching — will save ~88% at scale for short messages

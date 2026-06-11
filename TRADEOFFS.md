@@ -34,13 +34,13 @@ Anthropic caches the exact prefix of a request. If the system prompt is identica
 
 ### Why it doesn't help for document ingestion
 
-Graphiti's system prompts are ~15 tokens (`"You are an entity extraction specialist..."`). The 4,096-token minimum threshold for Haiku 4.5 is never reached. Even if you inject a large static KX domain context (6,195 tokens), the math shows:
+Graphiti's system prompts are ~15 tokens (`"You are an entity extraction specialist..."`). The 4,096-token minimum threshold for Haiku 4.5 is never reached. Even if you inject a large static KX domain context (6,195 tokens), the math shows (Haiku 4.5 pricing $1.00/$5.00 per Mtok, see [PRODUCTION_INGEST_REPORT.md](PRODUCTION_INGEST_REPORT.md)):
 
 | Approach | Cost (70k calls) |
 |---|---|
-| No cache, no injection | $293 |
-| 6k injection + cache (5min TTL) | $330 |
-| 6k injection + cache (1hr TTL) | $328 |
+| No cache, no injection | $366 |
+| 6k injection + cache (5min TTL) | $412 |
+| 6k injection + cache (1hr TTL) | $410 |
 
 **Caching costs more** because the injected tokens are *added on top* of existing variable content — they don't replace anything. The dominant cost is always the document chunk + graph context per call (~4,648 tokens), which changes every call and can never be cached.
 
@@ -131,10 +131,12 @@ For a knowledge graph primarily queried by developers on KX topics, `nomic-embed
 
 ## Full Corpus Cost Projection
 
-At current Haiku pricing ($0.80/MTok input, $4.00/MTok output):
+At Haiku 4.5 pricing ($1.00/MTok input, $5.00/MTok output — see [PRODUCTION_INGEST_REPORT.md](PRODUCTION_INGEST_REPORT.md) for the pricing fix and per-repo breakdown):
 
-- **Full 8-repo corpus**: ~$293 (70k LLM calls, 15.8M chars)
+- **Full 8-repo corpus**: ~$457 (6,308 episodes, ~72k LLM calls, 15.9M chars)
+- **Done so far**: kx-skills + kdb-x-mcp-server + kdbai-mcp-server, $12.31 actual (group_id=production)
+- **Remaining 5 repos**: ~$444
 - **Recurring ingestion** (new sources weekly): cost scales linearly with data volume
 - **With Slack/Freshdesk at scale** (1M+ calls): caching saves ~88% on short-form content
 
-The dominant cost driver is nvidia-kx-samples (7.5M chars, ~$139) and docs (4.2M chars, ~$78). Pruning test files, changelogs, and auto-generated content from those two repos before ingestion could cut total cost by 30-40%.
+The dominant cost driver is nvidia-kx-samples (7.6M chars, ~$209) and docs (4.3M chars, ~$122). Pruning test files, changelogs, and auto-generated content from those two repos before ingestion could cut total cost by 30-40%.
