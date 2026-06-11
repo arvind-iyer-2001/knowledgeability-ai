@@ -48,13 +48,12 @@ A knowledge graph over KX/kdb+ documentation and source code. Files from 8 KX re
 - Docker (Neo4j)
 - Ollama (local embeddings)
 
-### 1. Venv + dependencies
+### 1. Install dependencies
 ```bash
-uv venv .venv
-uv pip install --python .venv/bin/python graphiti-core anthropic python-dotenv mcp "graphiti-core[voyageai]" matplotlib
+uv sync
 ```
 
-> **Do not use system Python or Homebrew Python** — externally managed environment will block pip. Use `uv`, not `python3 -m venv` + `pip`.
+> Deps are pinned in `pyproject.toml` / `uv.lock`. Do not use system Python, `pip`, or `python3 -m venv` — `uv sync` creates `.venv` and installs everything. All commands below run via `uv run`.
 
 ### 2. Neo4j
 ```bash
@@ -92,13 +91,12 @@ cd ..
 
 ### Ingest a single repo (recommended first run)
 ```bash
-source .venv/bin/activate
-python3 ingest.py --repo kdb-x-mcp-server --model haiku --group-id haiku
+uv run python3 ingest.py --repo kdb-x-mcp-server --model haiku --group-id haiku
 ```
 
 ### Ingest full corpus (remaining 5 repos)
 ```bash
-python3 ingest.py --repo kx-sdk-reference-architectures --repo kx-vscode --repo pykx --repo docs --repo nvidia-kx-samples --model haiku --group-id production
+uv run python3 ingest.py --repo kx-sdk-reference-architectures --repo kx-vscode --repo pykx --repo docs --repo nvidia-kx-samples --model haiku --group-id production
 # ~24h, ~$444 at Haiku pricing (corrected) — see PRODUCTION_INGEST_REPORT.md
 # 3/8 repos (kx-skills, kdb-x-mcp-server, kdbai-mcp-server) already done: 170 eps, $12.31, group_id=production
 ```
@@ -110,9 +108,9 @@ python3 ingest.py --repo kx-sdk-reference-architectures --repo kx-vscode --repo 
 
 ### Query the graph
 ```bash
-python3 query.py "How does tickerplant log recovery work?"
-python3 query.py --group haiku "What is .u.upd?"
-python3 query.py  # interactive mode
+uv run python3 query.py "How does tickerplant log recovery work?"
+uv run python3 query.py --group haiku "What is .u.upd?"
+uv run python3 query.py  # interactive mode
 ```
 
 ### MCP server for Claude Desktop
@@ -186,7 +184,7 @@ Token usage — calls: 628 | input: 2,329,448 | output: 113,000 | cache_write: 4
 ### Immediate
 - [x] First production batch ingested: `kx-skills` + `kdb-x-mcp-server` + `kdbai-mcp-server`, Haiku 4.5, group_id=production (170 eps, $12.31, 729 entities, 824 edges) — 2026-06-11
 - [ ] Decide production model for remaining 5 repos: sonnet-v2 quality (219 entities, 435 edges, 7.5 edges/ep) vs haiku cost (~$444 for remaining repos at corrected pricing)
-- [ ] Ingest remaining repos: `python3 ingest.py --repo kx-sdk-reference-architectures --repo kx-vscode --repo pykx --repo docs --repo nvidia-kx-samples --model haiku --group-id production`
+- [ ] Ingest remaining repos: `uv run python3 ingest.py --repo kx-sdk-reference-architectures --repo kx-vscode --repo pykx --repo docs --repo nvidia-kx-samples --model haiku --group-id production`
 - [ ] Prune test files / changelogs from `nvidia-kx-samples` ($208.91, 46% of remaining cost) and `docs` ($122.38) before ingesting — could cut ~30% cost
 
 ### When adding Slack / Freshdesk

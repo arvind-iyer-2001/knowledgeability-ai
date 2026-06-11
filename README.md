@@ -42,9 +42,9 @@ ollama pull nomic-embed-text
 
 Use [`uv`](https://github.com/astral-sh/uv) — system/Homebrew Python blocks global `pip install`:
 ```bash
-uv venv .venv
-uv pip install --python .venv/bin/python graphiti-core anthropic python-dotenv uvicorn starlette mcp "graphiti-core[voyageai]" matplotlib
+uv sync
 ```
+Deps are pinned in `pyproject.toml` / `uv.lock`. This creates `.venv` for you — don't create it manually or use `pip` directly. Run all Python commands below via `uv run`.
 
 **4. Configure environment**
 ```bash
@@ -79,22 +79,22 @@ done
 
 ```bash
 # Preview cost/time/episode estimate without running (no LLM calls)
-python3 ingest.py --repo pykx --dry-run
+uv run python3 ingest.py --repo pykx --dry-run
 
 # Single repo
-python3 ingest.py --repo pykx --model haiku --group-id production
+uv run python3 ingest.py --repo pykx --model haiku --group-id production
 
 # Multiple repos in one run (repeatable --repo)
-python3 ingest.py --repo kx-skills --repo kdb-x-mcp-server --model haiku --group-id production
+uv run python3 ingest.py --repo kx-skills --repo kdb-x-mcp-server --model haiku --group-id production
 
 # Full corpus (all repos under dump/)
-python3 ingest.py --model haiku --group-id production
+uv run python3 ingest.py --model haiku --group-id production
 
 # Specific path
-python3 ingest.py --path dump/docs/docs/wp --model haiku
+uv run python3 ingest.py --path dump/docs/docs/wp --model haiku
 
 # Embedder selection (default: ollama)
-python3 ingest.py --repo pykx --embedder voyage  # Voyage AI (requires VOYAGE_API_KEY)
+uv run python3 ingest.py --repo pykx --embedder voyage  # Voyage AI (requires VOYAGE_API_KEY)
 ```
 
 `--model` choices: `haiku` (recommended — fastest, cheapest, 0 errors; see [TRADEOFFS.md](TRADEOFFS.md)), `sonnet`, `opus` (default).
@@ -109,13 +109,13 @@ Full per-episode log: `logs/ingest_<timestamp>.log`. Neo4j node/edge counts: `./
 
 ```bash
 # One-shot
-python3 query.py "What compression options exist for kdb+?"
+uv run python3 query.py "What compression options exist for kdb+?"
 
 # Filter by ingestion group (repeatable)
-python3 query.py --group production "How does tickerplant log recovery work?"
+uv run python3 query.py --group production "How does tickerplant log recovery work?"
 
 # Interactive mode
-python3 query.py
+uv run python3 query.py
 ```
 
 ## MCP Server
@@ -137,7 +137,7 @@ Config at `~/Library/Application Support/Claude/claude_desktop_config.json`. Res
 
 **SSE server** (generic HTTP MCP clients):
 ```bash
-python3 mcp_server.py
+uv run python3 mcp_server.py
 # Runs on http://localhost:8765/sse
 ```
 

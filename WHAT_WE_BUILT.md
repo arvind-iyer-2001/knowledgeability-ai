@@ -19,8 +19,7 @@ KX knowledge graph system using Graphiti + Neo4j, with local and cloud LLM suppo
 
 ## Environment Setup
 
-- Python venv at `.venv/` via `uv venv .venv` (required — Homebrew Python blocks global pip installs)
-- Dependencies: `uv pip install --python .venv/bin/python graphiti-core anthropic python-dotenv mcp "graphiti-core[voyageai]" matplotlib`
+- `uv sync` (required — Homebrew Python blocks global pip installs). Creates `.venv/`, installs deps pinned in `pyproject.toml`/`uv.lock`. Run all commands via `uv run`.
 - Secrets in `.env`: `ANTHROPIC_API_KEY`, `NEO4J_URI/USER/PASSWORD`, `OLLAMA_BASE_URL`
 - Neo4j running locally via Docker on bolt://localhost:7687
 - Ollama running locally on http://localhost:11434 with `nomic-embed-text` for embeddings
@@ -33,9 +32,9 @@ Reads files from `dump/`, chunks them (1500 chars, 200 overlap), feeds chunks as
 
 ### CLI
 ```bash
-python3 ingest.py --repo kdb-x-mcp-server --model haiku --group-id haiku
-python3 ingest.py --repo pykx --llm ollama --ollama-model llama3.1:8b
-python3 ingest.py --path dump/docs --model sonnet --group-id docs-sonnet
+uv run python3 ingest.py --repo kdb-x-mcp-server --model haiku --group-id haiku
+uv run python3 ingest.py --repo pykx --llm ollama --ollama-model llama3.1:8b
+uv run python3 ingest.py --path dump/docs --model sonnet --group-id docs-sonnet
 ```
 
 ### Key flags
@@ -139,9 +138,9 @@ The script uses `load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))` �
 ## Query CLI (`query.py`)
 
 ```bash
-python3 query.py "How does the tickerplant log recovery work?"
-python3 query.py --group haiku --group llama-fast "What is .u.upd?"
-python3 query.py  # interactive mode
+uv run python3 query.py "How does the tickerplant log recovery work?"
+uv run python3 query.py --group haiku --group llama-fast "What is .u.upd?"
+uv run python3 query.py  # interactive mode
 ```
 
 Supports `--llm`, `--model`, repeatable `--group` flags for filtering by ingestion group.

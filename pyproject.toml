@@ -1,0 +1,14 @@
+[project]
+name = "knowledgeability-ai"
+version = "0.1.0"
+description = "KX/kdb+ knowledge graph: ingestion pipeline, query CLI, and MCP server"
+requires-python = ">=3.10"
+dependencies = [
+    "graphiti-core[voyageai]",
+    "anthropic",
+    "python-dotenv",
+    "uvicorn",
+    "starlette",
+    "mcp",
+    "matplotlib",
+]

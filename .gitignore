@@ -18,6 +18,7 @@ build/
 *.log
 logs/
 kx-graph-export.json
+eval_report.md
 
 # graphify
 graphify-out/
